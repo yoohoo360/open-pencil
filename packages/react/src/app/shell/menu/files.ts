@@ -1,3 +1,4 @@
+import { saveCloudCover } from '#react/app/document/cloud-persist'
 import { uploadOSSFig } from '#react/app/document/oss'
 import { maybeRecordAutosave } from '#react/app/document/version-history/record'
 import type { EditorStore } from '#react/app/editor/store'
@@ -348,6 +349,11 @@ export async function saveFigFile(store: EditorStore) {
       try {
         await uploadOSSFig(remoteURL, data)
         void maybeRecordAutosave(store, data)
+        try {
+          await saveCloudCover(store)
+        } catch (error) {
+          console.warn('[Document] Cover save failed', error)
+        }
       } catch (error) {
         reportSaveFailure(store, error)
         return

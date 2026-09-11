@@ -1,6 +1,7 @@
 package cn.jongwong.service;
 
 import cn.jongwong.dto.FileInfo;
+import cn.jongwong.dto.OssPresignResponse;
 
 import java.io.InputStream;
 
@@ -61,4 +62,14 @@ public interface OssService {
      * 获取存储根路径
      */
     String getRootPath();
+
+    /**
+     * 生成直传预签名 PUT
+     */
+    OssPresignResponse presignUpload(String path, String fileName, String contentType);
+
+    /**
+     * 生成直读预签名 GET
+     */
+    OssPresignResponse presignDownload(String path);
 }

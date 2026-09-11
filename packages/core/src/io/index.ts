@@ -11,17 +11,21 @@ export {
   jsxFormat
 } from './formats'
 export { exportFigFile, parseFigFile, readFigFile, type ParseFigFileOptions } from './formats/fig'
+export { findFigThumbnailPageId } from './formats/fig/thumbnail-page'
 export { parsePenFile, readPenFile } from '@open-pencil/pen'
 export { sceneNodeToJSX, selectionToJSX, type JSXFormat } from './formats/jsx'
 export {
   computeContentBounds,
   renderNodesToImage,
   renderThumbnail,
+  renderCoverThumbnail,
+  computeCoverCapture,
   initCanvasKit,
   headlessRenderNodes,
   headlessRenderThumbnail,
   type RasterExportFormat,
-  type ExportFormat
+  type ExportFormat,
+  type CoverCapture
 } from './formats/raster'
 export {
   createSVGNodes,

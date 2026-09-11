@@ -1,5 +1,6 @@
+import { downloadOSSObject } from '#react/app/document/oss'
 import type { EditorStore } from '#react/app/editor/store'
-import { apiClient, documentAPI } from '#react/lib/client'
+import { documentAPI } from '#react/lib/client'
 
 const AUTOSAVE_MIN_INTERVAL_MS = 120_000
 const lastAutosaveAt = new WeakMap<EditorStore, number>()
@@ -29,12 +30,7 @@ export async function maybeRecordAutosave(store: EditorStore, bytes: Uint8Array)
 }
 
 export async function downloadVersionFig(path: string): Promise<Uint8Array> {
-  const res = await apiClient.get<ArrayBuffer>('/api/oss/download', {
-    params: { path: path.replace(/^\/+/, '') },
-    responseType: 'arraybuffer',
-    timeout: 120_000
-  })
-  const payload = res.data
-  if (!payload) throw new Error('Empty version file')
-  return new Uint8Array(payload)
+  const payload = await downloadOSSObject(path)
+  if (payload.byteLength === 0) throw new Error('Empty version file')
+  return payload
 }

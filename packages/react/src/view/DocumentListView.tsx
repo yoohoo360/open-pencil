@@ -1,8 +1,8 @@
+import { OssCoverImage } from '#react/app/document/oss-cover'
 import {
   authAPI,
   documentAPI,
   getAPIErrorMessage,
-  getHttpClientBaseUrl,
   type PencilDocument
 } from '#react/lib/client'
 import { File, FolderOpen, LoaderCircle, Plus, RefreshCw, Search, Trash, X } from 'lucide-react'
@@ -26,12 +26,6 @@ function formatTime(timestamp: string | number | undefined): string {
     hour: '2-digit',
     minute: '2-digit'
   })
-}
-
-function thumbnailSrc(file: PencilDocument): string {
-  if (!file.thumbnail_url) return ''
-  if (/^https?:\/\//i.test(file.thumbnail_url)) return file.thumbnail_url
-  return `${getHttpClientBaseUrl()}${file.thumbnail_url}`
 }
 
 export default function DocumentListView() {
@@ -224,9 +218,10 @@ export default function DocumentListView() {
                 onClick={() => void navigate(`/design/${file.key}`)}
               >
                 <div className="flex-1 bg-panel-field">
-                  {thumbnailSrc(file) ? (
-                    <img
-                      src={thumbnailSrc(file)}
+                  {file.thumbnail_url ? (
+                    <OssCoverImage
+                      path={file.thumbnail_url}
+                      revision={toMillis(file.updated_at) || undefined}
                       alt={file.name}
                       className="size-full object-cover"
                     />

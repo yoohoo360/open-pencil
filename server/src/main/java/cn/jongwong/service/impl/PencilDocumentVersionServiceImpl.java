@@ -13,6 +13,7 @@ import cn.jongwong.ro.UpdateDocumentVersionRequest;
 import cn.jongwong.security.SecurityUtils;
 import cn.jongwong.service.OssService;
 import cn.jongwong.service.PencilDocumentVersionService;
+import cn.jongwong.storage.StorageObjectPaths;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
@@ -106,12 +107,11 @@ public class PencilDocumentVersionServiceImpl implements PencilDocumentVersionSe
         }
 
         String historyId = UUID.randomUUID().toString();
-        String stamp = historyStamp();
-        String fileName = figFileName(document.getName());
-        String directory = "fig/" + documentKey + "/" + stamp;
-        String objectPath = "/" + directory + "/" + fileName;
+        String directory = StorageObjectPaths.directory("fig", securityUtils.getCurrentUsername());
+        String fileName = historyStamp() + "-" + documentKey + ".fig";
+        String storedPath;
         try {
-            ossService.upload(directory, fileName, file.getBytes());
+            storedPath = ossService.upload(directory, fileName, file.getBytes());
         } catch (IOException error) {
             throw ApiException.internalError("Failed to store history snapshot");
         }
@@ -124,7 +124,7 @@ public class PencilDocumentVersionServiceImpl implements PencilDocumentVersionSe
                 .kind(normalizedKind)
                 .title(trimToNull(title, MAX_TITLE))
                 .description(trimToNull(description, MAX_DESCRIPTION))
-                .url(objectPath)
+                .url(storedPath)
                 .createdBy(user != null ? user.getId() : null)
                 .createdAt(System.currentTimeMillis())
                 .isDeleted(0)

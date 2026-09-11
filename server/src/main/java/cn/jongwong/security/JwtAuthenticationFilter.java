@@ -2,12 +2,16 @@ package cn.jongwong.security;
 
 import cn.jongwong.domain.entity.User;
 import cn.jongwong.domain.repository.UserRepository;
+import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.CredentialsExpiredException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -49,6 +53,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                 }
             }
+        } catch (ExpiredJwtException e) {
+            request.setAttribute(
+                    AuthErrorCode.FAILURE_ATTRIBUTE,
+                    new CredentialsExpiredException("TOKEN_EXPIRED", e)
+            );
+            log.warn("Access token expired: {}", e.getMessage());
+        } catch (JwtException | IllegalArgumentException e) {
+            request.setAttribute(
+                    AuthErrorCode.FAILURE_ATTRIBUTE,
+                    new BadCredentialsException("INVALID_TOKEN", e)
+            );
+            log.warn("Invalid access token: {}", e.getMessage());
         } catch (Exception e) {
             log.error("Cannot set user authentication: {}", e.getMessage());
         }

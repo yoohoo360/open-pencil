@@ -21,6 +21,18 @@ public class SecurityUtils {
         return user != null ? user.getId() : null;
     }
 
+    public String getCurrentUsername() {
+        User user = getCurrentUser();
+        if (user != null && user.getUsername() != null && !user.getUsername().isBlank()) {
+            return user.getUsername();
+        }
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.getPrincipal() instanceof UserPrincipal principal) {
+            return principal.getUsername();
+        }
+        return null;
+    }
+
     public boolean isAuthenticated() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         return authentication != null && authentication.isAuthenticated() &&

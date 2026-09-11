@@ -1,15 +1,15 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { makeGLSurface, sizeCanvas, type CanvasGLContext } from '#react/canvas/surface/gl-surface'
+import { createCanvasHitTests, createRulerVisibility } from '#react/canvas/surface/overlays'
+import { createCanvasRenderLoop } from '#react/canvas/surface/render-loop'
+import type { CanvasElementRef, UseCanvasOptions } from '#react/canvas/surface/types'
+import config from '#react/config'
 import type { CanvasKit, Surface } from 'canvaskit-wasm'
+import { useEffect, useMemo, useRef } from 'react'
 
 import { SkiaRenderer } from '@open-pencil/core/canvas'
 import { getCanvasKit } from '@open-pencil/core/canvaskit'
 import type { Editor } from '@open-pencil/core/editor'
 import { computeAllLayouts } from '@open-pencil/core/layout'
-
-import { makeGLSurface, sizeCanvas, type CanvasGLContext } from '#react/canvas/surface/gl-surface'
-import { createCanvasHitTests, createRulerVisibility } from '#react/canvas/surface/overlays'
-import { createCanvasRenderLoop } from '#react/canvas/surface/render-loop'
-import type { CanvasElementRef, UseCanvasOptions } from '#react/canvas/surface/types'
 
 export type { UseCanvasOptions } from '#react/canvas/surface/types'
 
@@ -131,13 +131,15 @@ export function useCanvas(canvasRef: CanvasElementRef, editor: Editor, options?:
       state.surface = result.surface
       if (!state.surface) {
         if (createSurface(editor, target, state, nextOptions) && state.renderer) {
-          void state.renderer.loadFonts(() => loop.markDirty()).then(() => {
-            if (destroyed) return
-            computeAllLayouts(editor.graph, editor.state.currentPageId)
-            editor.requestRender()
-            renderNow()
-            return undefined
-          })
+          void state.renderer
+            .loadFonts(() => loop.markDirty())
+            .then(() => {
+              if (destroyed) return
+              computeAllLayouts(editor.graph, editor.state.currentPageId)
+              editor.requestRender()
+              renderNow()
+              return undefined
+            })
         }
         return
       }
@@ -157,10 +159,14 @@ export function useCanvas(canvasRef: CanvasElementRef, editor: Editor, options?:
     observer.observe(canvas)
 
     void (async () => {
-      state.ck = await getCanvasKit()
+      const wasmUrl = config.CANVASKIT_WASM_URL
+      state.ck = await getCanvasKit(
+        wasmUrl ? { locateFile: (file) => (file.endsWith('.wasm') ? wasmUrl : file) } : undefined
+      )
       if (destroyed) return
       const target = canvasRef.current
-      if (!target || !createSurface(editor, target, state, optionsRef.current) || !state.renderer) return
+      if (!target || !createSurface(editor, target, state, optionsRef.current) || !state.renderer)
+        return
 
       await state.renderer.loadFonts(() => loop.markDirty())
       if (destroyed) return

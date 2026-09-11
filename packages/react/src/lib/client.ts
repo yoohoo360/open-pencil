@@ -18,6 +18,7 @@ import axios, {
 import Cookies from 'js-cookie'
 
 import config from '../config'
+import { AUTH_ERROR_CODE, readAuthErrorCode, shouldAttemptTokenRefresh } from './auth-error'
 
 const ACCESS_TOKEN_COOKIE = 'access_token'
 const REFRESH_TOKEN_COOKIE = 'refresh_token'
@@ -218,11 +219,14 @@ http.interceptors.response.use(
   async (error: AxiosError) => {
     const originalRequest = error.config as RetryRequestConfig | undefined
     const status = error.response?.status
-    if (
-      !originalRequest ||
-      shouldSkipRefresh(originalRequest) ||
-      (status !== 401 && status !== 403)
-    ) {
+    const authCode = readAuthErrorCode(error.response?.data)
+    if (!originalRequest || shouldSkipRefresh(originalRequest)) {
+      throw error
+    }
+    if (!shouldAttemptTokenRefresh(status, authCode)) {
+      if (authCode === AUTH_ERROR_CODE.INVALID_TOKEN) {
+        clearTokensAndRedirect()
+      }
       throw error
     }
 
@@ -404,6 +408,13 @@ export const documentAPI = {
   },
   attachLibrary(fileKey: string, data: AttachDocumentLibraryRequest): Promise<APIResponse<void>> {
     return apiClient.put(`/api/document/${fileKey}/library`, data)
+  },
+  updateThumbnail(fileKey: string, file: File): Promise<APIResponse<boolean>> {
+    const form = new FormData()
+    form.append('file', file)
+    return apiClient.put<boolean>(`/api/document/${fileKey}/thumbnail`, form, {
+      timeout: 60_000
+    })
   },
   listVersions(
     fileKey: string,

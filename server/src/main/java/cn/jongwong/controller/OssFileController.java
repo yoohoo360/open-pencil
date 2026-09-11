@@ -1,12 +1,14 @@
 package cn.jongwong.controller;
 
+import cn.jongwong.dto.ApiResponse;
 import cn.jongwong.dto.FileInfo;
+import cn.jongwong.dto.OssPresignDownloadRequest;
+import cn.jongwong.dto.OssPresignRequest;
+import cn.jongwong.dto.OssPresignResponse;
 import cn.jongwong.service.OssService;
-import jakarta.annotation.security.PermitAll;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Profile;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -15,7 +17,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @RestController
@@ -23,9 +24,22 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class OssFileController {
 
+    private final OssService storageService;
 
-    @Autowired
-    private OssService storageService;
+    @PostMapping("/presign")
+    public ApiResponse<OssPresignResponse> presign(@Valid @RequestBody OssPresignRequest request) {
+        OssPresignResponse signed = storageService.presignUpload(
+                request.getPath(),
+                request.getFileName(),
+                request.getContentType()
+        );
+        return ApiResponse.ok(signed);
+    }
+
+    @PostMapping("/presign-download")
+    public ApiResponse<OssPresignResponse> presignDownload(@Valid @RequestBody OssPresignDownloadRequest request) {
+        return ApiResponse.ok(storageService.presignDownload(request.getPath()));
+    }
 
     // ==================== 上传 ====================
 
@@ -34,7 +48,7 @@ public class OssFileController {
      * POST /files/upload?path=docs
      */
     @PostMapping("/upload")
-    public ResponseEntity<FileInfo> upload(
+    public ApiResponse<FileInfo> upload(
             @RequestParam(value = "path", required = false) String path,
             @RequestParam("file") MultipartFile file) {
         try {
@@ -43,13 +57,15 @@ public class OssFileController {
 
             String filePath = storageService.upload(path, fileName, data);
             FileInfo fileInfo = storageService.getFileInfo(filePath);
-            System.out.printf("=============filePath===========%s%n", filePath);
+            if (fileInfo == null) {
+                fileInfo = FileInfo.builder().name(fileName).path(filePath).build();
+            }
             log.info("上传成功: {}", filePath);
-            return ResponseEntity.ok(fileInfo);
+            return ApiResponse.ok(fileInfo);
 
         } catch (IOException e) {
             log.error("上传失败", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            return ApiResponse.fail("上传失败");
         }
     }
 
@@ -58,7 +74,7 @@ public class OssFileController {
      * POST /files/upload/docs
      */
     @PostMapping("/upload/{path}")
-    public ResponseEntity<FileInfo> uploadToPath(
+    public ApiResponse<FileInfo> uploadToPath(
             @PathVariable String path,
             @RequestParam("file") MultipartFile file) {
         try {
@@ -67,13 +83,16 @@ public class OssFileController {
 
             String filePath = storageService.upload(path, fileName, data);
             FileInfo fileInfo = storageService.getFileInfo(filePath);
+            if (fileInfo == null) {
+                fileInfo = FileInfo.builder().name(fileName).path(filePath).build();
+            }
 
             log.info("✅ 上传成功: {}", filePath);
-            return ResponseEntity.ok(fileInfo);
+            return ApiResponse.ok(fileInfo);
 
         } catch (IOException e) {
             log.error("上传失败", e);
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            return ApiResponse.fail("上传失败");
         }
     }
 
@@ -164,6 +183,8 @@ public class OssFileController {
 
             return ResponseEntity.ok()
                     .contentType(mediaType)
+                    .header(HttpHeaders.CACHE_CONTROL, "no-store, no-cache, must-revalidate")
+                    .header(HttpHeaders.PRAGMA, "no-cache")
                     .body(data);
 
         } catch (Exception e) {

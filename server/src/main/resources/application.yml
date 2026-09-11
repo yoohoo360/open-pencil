@@ -135,6 +135,19 @@ collab:
   max-peers-per-room: ${COLLAB_MAX_PEERS_PER_ROOM:0}
   leave-grace-ms: ${COLLAB_LEAVE_GRACE_MS:4000}
 
+storage:
+  type: ${STORAGE_TYPE:local}
+  local:
+    path: ${LOCAL_STORAGE_PATH:./storage}
+  oss:
+    endpoint: ${OSS_ENDPOINT:oss-cn-shanghai.aliyuncs.com}
+    access-key: ${OSS_ACCESS_KEY:}
+    secret-key: ${OSS_SECRET_KEY:}
+    bucket: ${OSS_BUCKET:}
+    base-path: ${OSS_BASE_PATH:pencil/}
+    presign-expiration-seconds: ${OSS_PRESIGN_EXPIRATION_SECONDS:900}
+  blank-fig-url: ${BLANK_FIG_URL:https://yoohoo-oss.oss-cn-shanghai.aliyuncs.com/pencil/blank.fig}
+
 # Actuator Configuration (Observability)
 management:
   endpoints:

@@ -1,3 +1,4 @@
+import { useCloudDocumentPersist } from '#react/app/document/cloud-persist'
 import { loadDocumentLibraries } from '#react/app/document/libraries'
 import { openHttpDocument } from '#react/app/document/open-http'
 import { requestLocalFontAccess } from '#react/app/editor/fonts'
@@ -50,6 +51,8 @@ export default function DocumentView() {
       cancelled = true
     }
   }, [fileKey, store])
+
+  useCloudDocumentPersist(store, Boolean(fileKey) && !loading && !loadError)
 
   return (
     <EditorStoreProvider store={store}>

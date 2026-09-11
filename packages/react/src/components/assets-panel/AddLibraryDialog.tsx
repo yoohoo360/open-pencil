@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 
 import { IS_BROWSER } from '@open-pencil/core/constants'
 
+import { OssCoverImage } from '#react/app/document/oss-cover'
 import { useDialogUI } from '#react/components/ui/dialog'
 import { useI18n } from '#react/i18n'
 import type { RemoteLibraryCatalogItem } from '#react/lib/client'
@@ -63,8 +64,8 @@ export function AddLibraryDialog({
             >
               <div className="flex aspect-video w-full items-center justify-center overflow-hidden">
                 {item.thumbnail_url ? (
-                  <img
-                    src={item.thumbnail_url}
+                  <OssCoverImage
+                    path={item.thumbnail_url}
                     alt={item.name}
                     className="h-full w-full object-cover"
                   />

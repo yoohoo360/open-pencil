@@ -268,12 +268,15 @@ export {
 export {
   renderNodesToImage,
   renderThumbnail,
+  renderCoverThumbnail,
+  computeCoverCapture,
   computeContentBounds,
   initCanvasKit,
   headlessRenderNodes,
   headlessRenderThumbnail,
   type RasterExportFormat,
-  type ExportFormat
+  type ExportFormat,
+  type CoverCapture
 } from './io/formats/raster'
 export {
   renderNodesToSVG,

@@ -2,6 +2,8 @@ package cn.jongwong.service.impl;
 
 import cn.jongwong.config.StorageProperties;
 import cn.jongwong.dto.FileInfo;
+import cn.jongwong.dto.OssPresignResponse;
+import cn.jongwong.exception.ApiException;
 import cn.jongwong.service.OssService;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
@@ -157,6 +159,16 @@ public class LocalOssServiceImpl implements OssService {
     @Override
     public String getRootPath() {
         return storagePath;
+    }
+
+    @Override
+    public OssPresignResponse presignUpload(String path, String fileName, String contentType) {
+        throw ApiException.badRequest("Direct upload is not supported for local storage");
+    }
+
+    @Override
+    public OssPresignResponse presignDownload(String path) {
+        throw ApiException.badRequest("Direct download is not supported for local storage");
     }
 
     private String buildPath(String path, String fileName) {

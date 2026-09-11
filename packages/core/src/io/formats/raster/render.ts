@@ -10,6 +10,7 @@ import { computeDescendantVisualBounds } from '@open-pencil/scene-graph/geometry
 
 import type { SkiaRenderer } from '#core/canvas'
 import type { RenderColorSpace } from '#core/color/management'
+import { computeCoverCapture } from '#core/io/formats/raster/cover'
 import { extractExportGraph, findPageId } from '#core/io/subgraph'
 
 export type RasterExportFormat = 'PNG' | 'JPG' | 'WEBP'
@@ -350,4 +351,32 @@ export function renderThumbnail(
     canvas.translate(-bounds.minX * scale, -bounds.minY * scale)
     canvas.scale(scale, scale)
   })
+}
+
+const COVER_ZOOM = 1
+
+export function renderCoverThumbnail(
+  ck: CanvasKit,
+  renderer: SkiaRenderer,
+  graph: SceneGraph,
+  pageId: string
+): Uint8Array | null {
+  const capture = computeCoverCapture(graph, pageId)
+  if (!capture) return null
+
+  return renderToSurface(
+    ck,
+    renderer,
+    graph,
+    pageId,
+    capture.width,
+    capture.height,
+    'PNG',
+    100,
+    (canvas) => {
+      canvas.clear(ck.Color4f(renderer.pageColor.r, renderer.pageColor.g, renderer.pageColor.b, 1))
+      canvas.scale(COVER_ZOOM, COVER_ZOOM)
+      canvas.translate(-capture.x, -capture.y)
+    }
+  )
 }

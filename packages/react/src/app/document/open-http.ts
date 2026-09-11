@@ -1,5 +1,6 @@
+import { downloadOSSObject } from '#react/app/document/oss'
 import type { EditorStore } from '#react/app/editor/store'
-import { apiClient, type PencilDocument } from '#react/lib/client'
+import type { PencilDocument } from '#react/lib/client'
 
 import { readFigFile } from '@open-pencil/core/io'
 import { computeAllLayouts } from '@open-pencil/core/layout'
@@ -32,23 +33,17 @@ export async function openHttpDocument(
   const name = documentMeta?.name || 'Untitled'
   store.state.documentName = name
   store.state.documentVersion = documentMeta?.version ?? ''
-  store.state.documentFigURL = documentMeta?.url ?? ''
-  store.state.documentKey = documentMeta?.key ?? ''
-  store.state.historyPreviewId = null
-  store.state.loading = true
-  store.notify()
-  try {
-    const figPath = documentMeta?.url
-    if (!figPath) return
-
-    const res = await apiClient.get<ArrayBuffer>('/api/oss/download', {
-      params: { path: figPath },
-      responseType: 'arraybuffer',
-      timeout: 120_000
-    })
-    const payload = res.data
-    if (!payload) return
-    await applyFigBytes(store, new Uint8Array(payload), `${name}.fig`)
+    store.state.documentKey = documentMeta?.key ?? ''
+    store.state.historyPreviewId = null
+    store.state.loading = true
+    store.notify()
+    try {
+      const figPath = documentMeta?.url
+      if (!figPath) return
+      const payload = await downloadOSSObject(figPath)
+      if (payload.byteLength === 0) return
+      await applyFigBytes(store, payload, `${name}.fig`)
+      store.state.documentFigURL = figPath
   } finally {
     store.state.loading = false
     store.notify()

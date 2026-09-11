@@ -1,11 +1,20 @@
-const env = import.meta.env.APP_ENV
+import dev from './config.dev'
+import local from './config.local'
+import prod from './config.prod'
+import type { AppConfig } from './types'
 
-function resolveAPIBaseURL(): string {
-  if (env === 'test') return 'http://pencil.api.dev.yoohoo.cn'
-  if (env === 'prod') return 'https://api.yoohoo.cn'
-  return 'http://localhost:8080'
+const configs = {
+  local,
+  dev,
+  test: dev,
+  prod
+} as const satisfies Record<string, AppConfig>
+
+function loadConfig(): AppConfig {
+  const env = import.meta.env.APP_ENV
+  if (env && env in configs) return configs[env as keyof typeof configs]
+  return local
 }
 
-export default {
-  API_BASE_URL: resolveAPIBaseURL()
-}
+export type { AppConfig, OssTransferMode } from './types'
+export default loadConfig()

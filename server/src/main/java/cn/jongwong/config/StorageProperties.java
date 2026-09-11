@@ -24,6 +24,11 @@ public class StorageProperties {
      */
     private Oss oss = new Oss();
 
+    /**
+     * 新建文档时复制的空白 .fig 模板
+     */
+    private String blankFigUrl = "https://yoohoo-oss.oss-cn-shanghai.aliyuncs.com/pencil/blank.fig";
+
     @Data
     public static class Local {
         /**
@@ -37,7 +42,7 @@ public class StorageProperties {
         /**
          * OSS Endpoint
          */
-        private String endpoint = "oss-cn-hangzhou.aliyuncs.com";
+        private String endpoint = "oss-cn-shanghai.aliyuncs.com";
 
         /**
          * AccessKey ID
@@ -58,5 +63,10 @@ public class StorageProperties {
          * 文件前缀路径
          */
         private String basePath = "files/";
+
+        /**
+         * 直传预签名 URL 有效期（秒）
+         */
+        private int presignExpirationSeconds = 900;
     }
 }
