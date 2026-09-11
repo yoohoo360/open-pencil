@@ -24,7 +24,7 @@ spring:
     password: ${DATABASE_PASSWORD:postgres}
     schemas: public
     baseline-on-migrate: true
-    validate-on-migrate: false  # 临时关闭校验（仅开发环境）
+    validate-on-migrate: false # 临时关闭校验（仅开发环境）
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -52,5 +52,7 @@ logging:
     org.springframework.security: DEBUG
     org.hibernate.SQL: DEBUG
 
-server:
-  address: 127.0.0.1
+# Password signup/login skip the email code on this local profile.
+app:
+  auth:
+    require-email-verification: false

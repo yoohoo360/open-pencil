@@ -52,7 +52,9 @@ spring:
             enable: true
 
 server:
-  port: ${PORT:8000}
+  port: 8080
+  address: 0.0.0.0
+  forward-headers-strategy: framework
   error:
     include-message: always
     include-stacktrace: on_param
@@ -68,7 +70,7 @@ jwt:
 
 # CORS Configuration
 cors:
-  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:8080}
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:8000}
   allowed-methods: ${CORS_ALLOWED_METHODS:GET,POST,PUT,DELETE,OPTIONS,PATCH}
   allowed-headers: ${CORS_ALLOWED_HEADERS:*}
   allow-credentials: ${CORS_ALLOW_CREDENTIALS:true}
@@ -90,16 +92,34 @@ logging:
     org.springframework.security: DEBUG
     org.hibernate.SQL: ${SQL_LOG_LEVEL:DEBUG}
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
-    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+    console: '%d{yyyy-MM-dd HH:mm:ss} - %msg%n'
+    file: '%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n'
 
 # Application Configuration
 app:
-  name: ${APP_NAME:Jongwong}
+  name: ${APP_NAME:open-pencil-server}
   version: 1.0.0
   api-prefix: /api
   frontend-url: ${FRONTEND_URL:http://localhost:8080}
   public-url: ${PUBLIC_URL:http://localhost:8000}
+  auth:
+    require-email-verification: true
+  security:
+    permit-all:
+      - /api/auth/login
+      - /api/auth/register
+      - /api/auth/verify-email
+      - /api/auth/resend-verification
+      - /api/auth/refresh
+      - /api/auth/logout
+      - /api/auth/forgot-password
+      - /api/auth/reset-password
+      - /api/oauth/providers
+      - /api/oauth/github
+      - /api/oauth/github/callback
+      - /api/oauth/google
+      - /api/oauth/google/callback
+      - /api/oauth/session
 
 oauth:
   github:

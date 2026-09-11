@@ -1,7 +1,6 @@
 package cn.jongwong.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
@@ -43,8 +42,14 @@ public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
         }
 
 
+        log.warn(
+                "Unauthorized {} {} ({})",
+                request.getMethod(),
+                request.getRequestURI(),
+                code
+        );
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         objectMapper.writeValue(response.getWriter(), Map.of(
                 "code", code,
                 "message", message

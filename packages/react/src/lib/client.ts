@@ -17,9 +17,14 @@ import axios, {
 } from 'axios'
 import Cookies from 'js-cookie'
 
-export const API_BASE_URL = 'http://localhost:8000'
+import config from '../config'
+
 const ACCESS_TOKEN_COOKIE = 'access_token'
 const REFRESH_TOKEN_COOKIE = 'refresh_token'
+
+export const getHttpClientBaseUrl = () => {
+  return config.API_BASE_URL
+}
 
 const AUTH_REFRESH_SKIP_PATHS = [
   '/api/auth/login',
@@ -29,8 +34,7 @@ const AUTH_REFRESH_SKIP_PATHS = [
   '/api/auth/reset-password',
   '/api/auth/verify-email',
   '/api/auth/resend-verification',
-  '/api/auth/oauth/exchange',
-  '/api/auth/oauth/providers'
+  '/api/oauth/session'
 ]
 
 export type APIResponse<T = unknown> = {
@@ -88,11 +92,6 @@ export type RegisterResponse = {
   email: string
 }
 
-export type OauthProviders = {
-  github: boolean
-  google: boolean
-}
-
 export type CreateDocumentRequest = {
   name: string
   description?: string
@@ -116,9 +115,8 @@ export type AttachDocumentLibraryRequest = {
 }
 
 type RetryRequestConfig = InternalAxiosRequestConfig & { _retry?: boolean }
-
 const http = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: getHttpClientBaseUrl(),
   timeout: 20_000,
   headers: {
     'Content-Type': 'application/json'
@@ -189,7 +187,7 @@ async function refreshAccessToken(): Promise<AuthTokens> {
   if (!refreshToken) throw new Error('No refresh token available')
 
   const response = await axios.post<APIResponse<AuthTokens>>(
-    `${API_BASE_URL}/api/auth/refresh`,
+    `${getHttpClientBaseUrl()}/api/auth/refresh`,
     { refresh_token: refreshToken },
     { headers: { 'Content-Type': 'application/json' } }
   )
@@ -363,20 +361,8 @@ export const authAPI = {
     await apiClient.post('/api/auth/resend-verification', { email })
   },
 
-  async oauthProviders(): Promise<OauthProviders> {
-    try {
-      const response = await apiClient.get<OauthProviders>('/api/auth/oauth/providers')
-      return {
-        github: Boolean(response.data?.github),
-        google: Boolean(response.data?.google)
-      }
-    } catch {
-      return { github: false, google: false }
-    }
-  },
-
-  async exchangeOauth(ticket: string): Promise<AuthTokens> {
-    const response = await apiClient.post<AuthTokens>('/api/auth/oauth/exchange', { ticket })
+  async oauthSession(ticket: string): Promise<AuthTokens> {
+    const response = await apiClient.post<AuthTokens>('/api/oauth/session', { ticket })
     const tokens = unwrapAuthTokens(response)
     setTokens(tokens.access_token, tokens.refresh_token)
     if (tokens.user) writeStoredUserJSON(JSON.stringify(tokens.user))
@@ -472,20 +458,22 @@ export const documentAPI = {
     threadId: string,
     data: { body: string }
   ): Promise<APIResponse<DocumentComment>> {
-    return apiClient.post<DocumentComment>(`/api/document/${fileKey}/comments/${threadId}/replies`, data)
+    return apiClient.post<DocumentComment>(
+      `/api/document/${fileKey}/comments/${threadId}/replies`,
+      data
+    )
   },
   resolveCommentThread(
     fileKey: string,
     threadId: string,
     data: { resolved: boolean }
   ): Promise<APIResponse<DocumentCommentThread>> {
-    return apiClient.patch<DocumentCommentThread>(`/api/document/${fileKey}/comments/${threadId}`, data)
+    return apiClient.patch<DocumentCommentThread>(
+      `/api/document/${fileKey}/comments/${threadId}`,
+      data
+    )
   },
-  deleteComment(
-    fileKey: string,
-    threadId: string,
-    commentId: string
-  ): Promise<APIResponse<void>> {
+  deleteComment(fileKey: string, threadId: string, commentId: string): Promise<APIResponse<void>> {
     return apiClient.delete(`/api/document/${fileKey}/comments/${threadId}/messages/${commentId}`)
   }
 }

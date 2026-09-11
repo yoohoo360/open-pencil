@@ -10,12 +10,29 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class AppAuthProperties {
 
     /**
-     * Public browser origin of the React app, e.g. http://localhost:8080.
+     * Default React app origin when the OAuth start request does not send one.
      */
     private String frontendUrl = "http://localhost:8080";
 
     /**
-     * Public origin of this API, used as the OAuth redirect_uri host.
+     * Public origin of this API. GitHub/Google {@code redirect_uri} must hit
+     * this host; the browser is then sent back to an allowlisted frontend.
      */
     private String publicUrl = "http://localhost:8000";
+
+    private Auth auth = new Auth();
+
+    public boolean requireEmailVerification() {
+        return auth == null || auth.isRequireEmailVerification();
+    }
+
+    @Getter
+    @Setter
+    public static class Auth {
+        /**
+         * Local/dev backends set this false so password signup and login
+         * skip the email verification code.
+         */
+        private boolean requireEmailVerification = true;
+    }
 }

@@ -8,8 +8,8 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class OauthExchangeRequest {
+public class OauthTicketRequest {
 
-    @NotBlank
+    @NotBlank(message = "OAuth ticket is required")
     private String ticket;
 }

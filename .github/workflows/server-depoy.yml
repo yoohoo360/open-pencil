@@ -1,0 +1,261 @@
+name: server deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+
+      version_type:
+        description: 'Version type (major, minor, patch)'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+      offset:
+        description: 'Beta offset (only used for beta.N calculation when target_env=dev, ignored for prod)'
+        required: false
+        type: number
+        default: 0
+
+permissions:
+  contents: write
+
+env:
+  MODULE_NAME: open-pencil-server
+  MODULE_PATH: ./server
+  IMAGE_NAME: open-pencil-server
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: corretto
+  SERVER_IP: ${{ vars.SERVER_IP }}
+  SSH_USERNAME: ${{ vars.SSH_USERNAME }}
+  DOCKER_REGISTRY: ${{ vars.DOCKER_REGISTRY }}
+  REMOTE_COMPOSE_PATH: ${{ vars.REMOTE_COMPOSE_PATH }}
+  SSH_PORT: 22
+  ALIYUN_DOCKER_USERNAME: ${{ vars.ALIYUN_DOCKER_USERNAME }}
+  ALIYUN_DOCKER_PASSWORD: ${{ secrets.ALIYUN_DOCKER_PASSWORD }}
+  SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+
+jobs:
+  build_and_push:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.target_env }}
+    outputs:
+      docker_tag: ${{ steps.version.outputs.docker_tag }}
+      version: ${{ steps.version.outputs.version }}
+      previous_base_tag: ${{ steps.version.outputs.previous_base_tag }}
+      previous_tag: ${{ steps.prev_tag.outputs.previous_tag }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: console commit
+        run: |
+          echo "Current commit: $(git rev-parse --short HEAD)"
+          git log -3 --oneline --decorate
+
+      - name: Get latest version tag (exclude beta)
+        id: latest_version
+        run: |
+          git fetch --tags
+          LATEST=$(git tag --sort=-v:refname | grep -E '^${{ env.MODULE_NAME }}-v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+          echo "Found latest stable tag: $LATEST"
+          if [ -z "$LATEST" ]; then
+            echo "base_version=0.0.0" >> "$GITHUB_OUTPUT"
+          else
+            echo "base_version=${LATEST#${{ env.MODULE_NAME }}-v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute new version
+        id: version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          BASE="${{ steps.latest_version.outputs.base_version }}"
+          VERSION_TYPE="${{ github.event.inputs.version_type }}"
+          TARGET_ENV="${{ github.event.inputs.target_env }}"
+          OFFSET="${{ github.event.inputs.offset }}"
+          MODULE="${{ env.MODULE_NAME }}"
+
+          # 正式版本不受 offset 影响，强制忽略
+          if [ "$TARGET_ENV" = "prod" ] && [ "$OFFSET" != "0" ]; then
+            echo "::warning::offset=$OFFSET is ignored for prod releases"
+            OFFSET=0
+          fi
+
+          # base 永远来自远程最新的正式 tag（无论 prod 还是 beta 都基于同一个基准计算下一版本号）
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+
+          if [ "$VERSION_TYPE" = "major" ]; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif [ "$VERSION_TYPE" = "minor" ]; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          VERSION="$MAJOR.$MINOR.$PATCH"
+
+          if [ "$TARGET_ENV" = "dev" ]; then
+            # beta 序号使用 GitHub 内置的单调递增 run_number，避免因删除 tag 导致重复/回退
+            BETA_NUM=$((RUN_NUMBER + OFFSET))
+            VERSION="$VERSION-beta.$BETA_NUM"
+          fi
+
+          DOCKER_TAG="$VERSION"
+          PREVIOUS_BASE_TAG="${MODULE}-v${BASE}"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "docker_tag=$DOCKER_TAG" >> "$GITHUB_OUTPUT"
+          echo "module=$MODULE" >> "$GITHUB_OUTPUT"
+          echo "previous_base_tag=$PREVIOUS_BASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Show computed version
+        run: |
+          echo "✅ Computed version: ${{ steps.version.outputs.version }}"
+          echo "🐳 Docker tag: ${{ steps.version.outputs.docker_tag }}"
+          echo "⏮️ Previous base tag: ${{ steps.version.outputs.previous_base_tag }}"
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: 'maven'
+
+      - name: Verify module structure
+        run: |
+          echo "Verifying ${{ env.MODULE_PATH }} module..."
+          if [ ! -d "${{ env.MODULE_PATH }}" ]; then
+            echo "::error::${{ env.MODULE_PATH }} module directory not found!"
+            exit 1
+          fi
+          ls -la "${{ env.MODULE_PATH }}/"
+
+      - name: Login to Aliyun Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: registry.cn-hangzhou.aliyuncs.com
+          username: ${{ env.ALIYUN_DOCKER_USERNAME }}
+          password: ${{ env.ALIYUN_DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        env:
+          BUILDKIT_PROGRESS: plain
+        with:
+          context: ${{ env.MODULE_PATH }}
+          file: ${{ env.MODULE_PATH }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.docker_tag }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
+
+      - name: Record previous deployed tag
+        id: prev_tag
+        env:
+          REMOTE_COMPOSE_PATH: ${{ vars.REMOTE_COMPOSE_PATH }}
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keygen -R "$SERVER_IP" 2>/dev/null || true
+          ssh-keyscan -p "$SSH_PORT" "$SERVER_IP" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          PREV_VERSION=$(ssh -i ~/.ssh/id_rsa -p "$SSH_PORT" -o StrictHostKeyChecking=yes "$SSH_USERNAME@$SERVER_IP" "
+            grep -oP \"(?<=image: $DOCKER_REGISTRY/$IMAGE_NAME:)[^ ]+\" '$REMOTE_COMPOSE_PATH' || true
+          ")
+
+          echo "Currently deployed remote image tag: $PREV_VERSION"
+          if [ -n "$PREV_VERSION" ] && [ "$PREV_VERSION" != "${{ steps.version.outputs.docker_tag }}" ]; then
+            echo "previous_tag=${{ env.MODULE_NAME }}-v$PREV_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "previous_tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push current version tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          MODULE="${{ env.MODULE_NAME }}"
+          CURRENT_VERSION="${{ steps.version.outputs.version }}"
+          CURRENT_TAG="${MODULE}-v${CURRENT_VERSION}"
+
+          git fetch --tags --force
+
+          if git tag -l "$CURRENT_TAG" | grep -q "$CURRENT_TAG"; then
+            echo "Tag $CURRENT_TAG already exists, removing before re-tagging"
+            git tag -d "$CURRENT_TAG" || true
+            git push origin ":refs/tags/$CURRENT_TAG" || true
+          fi
+
+          git tag "$CURRENT_TAG"
+          git push origin "$CURRENT_TAG"
+
+      - name: Deploy Docker
+        env:
+          REMOTE_COMPOSE_PATH: ${{ vars.REMOTE_COMPOSE_PATH }}
+        run: |
+          set -e
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+          ssh-keygen -R "$SERVER_IP" 2>/dev/null || true
+          ssh-keyscan -p "$SSH_PORT" "$SERVER_IP" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          echo "Replacing docker tag in remote docker-compose.yml..."
+          ssh -i ~/.ssh/id_rsa -p "$SSH_PORT" -o StrictHostKeyChecking=yes "$SSH_USERNAME@$SERVER_IP" "
+            set -e
+            sed -i 's|image: $DOCKER_REGISTRY/$IMAGE_NAME:.*|image: $DOCKER_REGISTRY/$IMAGE_NAME:${{ steps.version.outputs.docker_tag }}|' '$REMOTE_COMPOSE_PATH'
+          "
+
+          echo "Logging in to Aliyun registry on remote server..."
+          ssh -i ~/.ssh/id_rsa -p "$SSH_PORT" -o StrictHostKeyChecking=yes "$SSH_USERNAME@$SERVER_IP" "
+            set -e
+            echo '$ALIYUN_DOCKER_PASSWORD' | docker login '$DOCKER_REGISTRY' -u '$ALIYUN_DOCKER_USERNAME' --password-stdin
+          "
+
+          echo "Restarting container..."
+          ssh -i ~/.ssh/id_rsa -p "$SSH_PORT" -o StrictHostKeyChecking=yes "$SSH_USERNAME@$SERVER_IP" "
+            set -e
+            cd /data/docker-mnt && docker compose -f '$REMOTE_COMPOSE_PATH' up -d
+          "
+
+      - name: Cleanup previous tag after successful deploy
+        if: success() && steps.prev_tag.outputs.previous_tag != ''
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          PREV_TAG="${{ steps.prev_tag.outputs.previous_tag }}"
+          echo "Deploy succeeded, deleting previous tag: $PREV_TAG"
+          git tag -d "$PREV_TAG" || true
+          git push origin ":refs/tags/$PREV_TAG" || true

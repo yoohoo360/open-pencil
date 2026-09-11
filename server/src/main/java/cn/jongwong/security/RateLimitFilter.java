@@ -1,6 +1,7 @@
 package cn.jongwong.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import cn.jongwong.config.AppSecurityProperties;
 import cn.jongwong.config.RateLimitConfig;
 import cn.jongwong.dto.ApiResponse;
 import io.github.bucket4j.Bucket;
@@ -28,6 +29,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
     private final Map<String, Bucket> rateLimitBuckets;
     private final RateLimitConfig rateLimitConfig;
+    private final AppSecurityProperties appSecurityProperties;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -39,7 +41,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         String uri = request.getRequestURI();
 
         // Get or create bucket for this client
-        Bucket bucket = rateLimitBuckets.computeIfAbsent(clientId, k -> getBucketForUri(uri));
+        Bucket bucket = rateLimitBuckets.computeIfAbsent(clientId, k -> getBucketForUri(request));
 
         // Try to consume a token
         if (bucket.tryConsume(1)) {
@@ -75,8 +77,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
      * Get appropriate bucket based on URI
      * Auth endpoints have stricter limits
      */
-    private Bucket getBucketForUri(String uri) {
-        if (uri.startsWith("/api/auth")) {
+    private Bucket getBucketForUri(HttpServletRequest request) {
+        if (appSecurityProperties.matches(request)) {
             return rateLimitConfig.createAuthBucket();
         }
         return rateLimitConfig.createBucket();

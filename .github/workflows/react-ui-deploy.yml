@@ -1,0 +1,238 @@
+name: react ui deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_env:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+
+      version_type:
+        description: 'Version type (major, minor, patch)'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+      offset:
+        description: 'Beta offset (only used for beta.N calculation when target_env=dev, ignored for prod)'
+        required: false
+        type: number
+        default: 0
+
+permissions:
+  contents: write
+
+env:
+  GIT_USER_NAME: ${{ vars.GIT_USER_NAME }}
+  GIT_USER_EMAIL: ${{ vars.GIT_USER_EMAIL }}
+  APP_NAME: open-pencil-react
+  TAG_PREFIX: open-pencil-react-v
+  BUILD_DIR: packages/react
+  DIST_DIR: packages/react/dist
+  REMOTE_TMP_TAR: /tmp/dist.tar.gz
+  TAR_FILE: dist.tar.gz
+  SSH_PORT: 22
+  SSH_USERNAME: ${{ vars.SSH_USERNAME }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.target_env }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      previous_base_tag: ${{ steps.version.outputs.previous_base_tag }}
+      previous_tag: ${{ steps.prev_tag.outputs.previous_tag }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: console commit
+        run: |
+          echo "Current commit: $(git rev-parse --short HEAD)"
+          git log -3 --oneline --decorate
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build project
+        working-directory: ${{ env.BUILD_DIR }}
+        run: |
+          if [ "${{ github.event.inputs.target_env }}" = "prod" ]; then
+            bun run build:prod
+          else
+            bun run build:test
+          fi
+
+      - name: Show build dist dir
+        run: |
+          ls -al "${{ env.DIST_DIR }}"
+
+      - name: Get latest version tag
+        id: latest
+        run: |
+          git fetch --tags
+          TAG=$(git tag --sort=-v:refname | grep -E "^${{ env.TAG_PREFIX }}[0-9]+\.[0-9]+\.[0-9]+$" | head -n1)
+          echo "Found latest tag: $TAG"
+          if [ -z "$TAG" ]; then
+            echo "base_version=0.0.0" >> "$GITHUB_OUTPUT"
+          else
+            echo "base_version=${TAG#${{ env.TAG_PREFIX }}}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute new version
+        id: version
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          BASE="${{ steps.latest.outputs.base_version }}"
+          VERSION_TYPE="${{ github.event.inputs.version_type }}"
+          TARGET_ENV="${{ github.event.inputs.target_env }}"
+          OFFSET="${{ github.event.inputs.offset }}"
+          TAG_PREFIX="${{ env.TAG_PREFIX }}"
+
+          # 正式版本不受 offset 影响，强制忽略
+          if [ "$TARGET_ENV" = "prod" ] && [ "$OFFSET" != "0" ]; then
+            echo "::warning::offset=$OFFSET is ignored for prod releases"
+            OFFSET=0
+          fi
+
+          # base 永远来自远程最新的正式 tag
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+
+          if [ "$VERSION_TYPE" = "major" ]; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif [ "$VERSION_TYPE" = "minor" ]; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          else
+            PATCH=$((PATCH + 1))
+          fi
+
+          VERSION="$MAJOR.$MINOR.$PATCH"
+
+          if [ "$TARGET_ENV" = "dev" ]; then
+            # beta 序号使用 GitHub 内置的单调递增 run_number，避免因删除 tag 导致重复/回退
+            BETA_NUM=$((RUN_NUMBER + OFFSET))
+            VERSION="$VERSION-beta.$BETA_NUM"
+          fi
+
+          PREVIOUS_BASE_TAG="${TAG_PREFIX}${BASE}"
+
+          echo "✅ version=$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "previous_base_tag=$PREVIOUS_BASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Record previous deployed version from remote
+        id: prev_tag
+        env:
+          SERVER_IP: ${{ vars.SERVER_IP }}
+          TARGET_DIR: ${{ vars.TARGET_DIR }}
+          SSH_USERNAME: ${{ env.SSH_USERNAME }}
+          SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/dev.key
+          chmod 600 ~/.ssh/dev.key
+          ssh-keyscan -p "$SSH_PORT" "$SERVER_IP" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          PREV_VERSION=$(ssh -i ~/.ssh/dev.key -p "$SSH_PORT" "$SSH_USERNAME@$SERVER_IP" "
+            cat '$TARGET_DIR/VERSION' 2>/dev/null || true
+          ")
+
+          echo "Currently deployed remote version: $PREV_VERSION"
+          if [ -n "$PREV_VERSION" ] && [ "$PREV_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "previous_tag=${{ env.TAG_PREFIX }}$PREV_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "previous_tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push current version tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          TAG_PREFIX="${{ env.TAG_PREFIX }}"
+          CURRENT_VERSION="${{ steps.version.outputs.version }}"
+          CURRENT_TAG="${TAG_PREFIX}${CURRENT_VERSION}"
+
+          git fetch --tags --force
+
+          if git tag -l "$CURRENT_TAG" | grep -q "$CURRENT_TAG"; then
+            echo "Tag $CURRENT_TAG already exists, removing before re-tagging"
+            git tag -d "$CURRENT_TAG" || true
+            git push origin ":refs/tags/$CURRENT_TAG" || true
+          fi
+
+          git tag "$CURRENT_TAG"
+          git push origin "$CURRENT_TAG"
+
+      - name: Set up SSH and deploy
+        env:
+          SERVER_IP: ${{ vars.SERVER_IP }}
+          TARGET_DIR: ${{ vars.TARGET_DIR }}
+          SSH_PORT: ${{ env.SSH_PORT }}
+          SSH_USERNAME: ${{ env.SSH_USERNAME }}
+          SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+          NEW_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -e
+
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/dev.key
+          chmod 600 ~/.ssh/dev.key
+
+          ssh-keyscan -p "$SSH_PORT" "$SERVER_IP" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          tar -czf "$TAR_FILE" "$DIST_DIR"
+
+          scp -i ~/.ssh/dev.key -P "$SSH_PORT" "$TAR_FILE" "$SSH_USERNAME@$SERVER_IP:$REMOTE_TMP_TAR"
+
+          ssh -i ~/.ssh/dev.key -p "$SSH_PORT" "$SSH_USERNAME@$SERVER_IP" "
+            set -e
+            mkdir -p '$TARGET_DIR'
+            rm -rf '$TARGET_DIR'/*
+            tar -xzf '$REMOTE_TMP_TAR' -C '$TARGET_DIR' --strip-components=3
+            rm -f '$REMOTE_TMP_TAR'
+            echo '$NEW_VERSION' > '$TARGET_DIR/VERSION'
+            cd /data/docker-mnt && docker compose exec -T nginx nginx -s reload
+          "
+
+          rm -f "$TAR_FILE"
+
+      - name: Cleanup previous tag after successful deploy
+        if: success() && steps.prev_tag.outputs.previous_tag != ''
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          PREV_TAG="${{ steps.prev_tag.outputs.previous_tag }}"
+          echo "Deploy succeeded, deleting previous tag: $PREV_TAG"
+          git tag -d "$PREV_TAG" || true
+          git push origin ":refs/tags/$PREV_TAG" || true

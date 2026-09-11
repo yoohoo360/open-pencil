@@ -1,12 +1,16 @@
 package cn.jongwong.auth;
 
+import cn.jongwong.dto.AuthResponse;
 import cn.jongwong.dto.OauthProvidersResponse;
 import cn.jongwong.exception.ApiException;
 import cn.jongwong.service.AuthService;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.util.UriComponentsBuilder;
@@ -20,7 +24,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 @Slf4j
@@ -31,7 +37,6 @@ public class OauthService {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(15);
     private static final long STATE_TTL_MINUTES = 10;
-    private static final long TICKET_TTL_MINUTES = 2;
 
     private final OauthProperties oauthProperties;
     private final AppAuthProperties appAuthProperties;
@@ -39,11 +44,36 @@ public class OauthService {
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
             .connectTimeout(HTTP_TIMEOUT)
             .build();
 
+    @Value("${cors.allowed-origins:}")
+    private String corsAllowedOrigins;
+
+    public String frontendOrigin() {
+        String value = trimSlash(appAuthProperties.getFrontendUrl());
+        return value.isBlank() ? "http://localhost:8080" : value;
+    }
+
+    public String requestOrigin(HttpServletRequest request) {
+        return originFrom(
+                request.getHeader("X-Forwarded-Proto"),
+                request.getHeader("X-Forwarded-Host"),
+                request.getHeader("Host"),
+                request.getScheme(),
+                request.getServerName(),
+                request.getServerPort(),
+                frontendOrigin()
+        );
+    }
+
     public String frontendLoginError(String message) {
-        String frontend = trimSlash(appAuthProperties.getFrontendUrl());
+        return frontendLoginError(message, frontendOrigin());
+    }
+
+    public String frontendLoginError(String message, String origin) {
+        String frontend = allowedFrontend(origin);
         String text = message == null || message.isBlank() ? "Sign in was cancelled" : message;
         return frontend + "/login?error=" + url(text);
     }
@@ -55,23 +85,25 @@ public class OauthService {
                 .build();
     }
 
-    public String authorizationUrl(String provider, String redirect) {
+    public String authorizationUrl(String provider, String redirect, String origin) {
         String normalized = normalizeProvider(provider);
         if (!oauthProperties.isConfigured(normalized)) {
             throw ApiException.badRequest(normalized + " login is not configured");
         }
         OauthProperties.Provider config = oauthProperties.config(normalized);
+        SafeReturnTo returnTo = parseReturnTo(redirect);
+        String callbackUri = callbackUrl(normalized, apiPublicUrl());
         String state = randomToken();
         redis.opsForValue().set(
                 stateKey(state),
-                normalized + "|" + safeRedirect(redirect),
+                packState(normalized, returnTo.path(), returnTo.origin(), callbackUri),
                 STATE_TTL_MINUTES,
                 TimeUnit.MINUTES
         );
         if ("github".equals(normalized)) {
             return UriComponentsBuilder.fromUriString("https://github.com/login/oauth/authorize")
                     .queryParam("client_id", config.getClientId())
-                    .queryParam("redirect_uri", callbackUrl(normalized))
+                    .queryParam("redirect_uri", callbackUri)
                     .queryParam("scope", "read:user user:email")
                     .queryParam("state", state)
                     .encode()
@@ -79,7 +111,7 @@ public class OauthService {
         }
         return UriComponentsBuilder.fromUriString("https://accounts.google.com/o/oauth2/v2/auth")
                 .queryParam("client_id", config.getClientId())
-                .queryParam("redirect_uri", callbackUrl(normalized))
+                .queryParam("redirect_uri", callbackUri)
                 .queryParam("response_type", "code")
                 .queryParam("scope", "openid email profile")
                 .queryParam("state", state)
@@ -89,8 +121,8 @@ public class OauthService {
                 .toUriString();
     }
 
-    public String handleCallback(String provider, String code, String state) {
-        String frontend = trimSlash(appAuthProperties.getFrontendUrl());
+    public OauthCallbackResult handleCallback(String provider, String code, String state, String origin) {
+        String frontend = frontendOrigin();
         try {
             if (code == null || code.isBlank() || state == null || state.isBlank()) {
                 throw ApiException.badRequest("Missing OAuth code");
@@ -100,57 +132,102 @@ public class OauthService {
             if (packed == null) {
                 throw ApiException.badRequest("OAuth state expired. Try again.");
             }
-            int split = packed.indexOf('|');
-            String expectedProvider = split < 0 ? packed : packed.substring(0, split);
-            String redirect = split < 0 ? "/dashboard" : packed.substring(split + 1);
+            OauthPendingState pending = parseState(packed);
+            frontend = allowedFrontend(pending.frontendOrigin());
             String normalized = normalizeProvider(provider);
-            if (!expectedProvider.equals(normalized)) {
+            if (!pending.provider().equals(normalized)) {
                 throw ApiException.badRequest("OAuth provider mismatch");
             }
-            OauthProfile profile = fetchProfile(normalized, code);
+            String callbackUri = pending.callbackUri() == null || pending.callbackUri().isBlank()
+                    ? callbackUrl(normalized, apiPublicUrl())
+                    : pending.callbackUri();
+            OauthProfile profile = fetchProfile(normalized, code, callbackUri);
             String userId = authService.findOrCreateOauthUser(profile);
-            String ticket = randomToken();
-            redis.opsForValue().set(ticketKey(ticket), userId, TICKET_TTL_MINUTES, TimeUnit.MINUTES);
-            return frontend + "/login/oauth?ticket=" + url(ticket) + "&redirect=" + url(redirect);
+            AuthResponse session = authService.issueSessionByUserId(userId);
+            String ticket = issueTicket(session);
+            return new OauthCallbackResult(
+                    allowedFrontend(pending.frontendOrigin()) + "/oauth/callback?ticket=" + url(ticket),
+                    null
+            );
         } catch (ApiException error) {
             log.warn("OAuth callback failed: {}", error.getMessage());
-            return frontend + "/login?error=" + url(error.getMessage());
+            return new OauthCallbackResult(frontendLoginError(error.getMessage(), frontendOrigin()), null);
         } catch (Exception error) {
             log.warn("OAuth callback failed", error);
-            return frontend + "/login?error=" + url("Sign in with " + provider + " failed");
+            String detail = error.getMessage();
+            if (detail == null || detail.isBlank()) {
+                detail = "Sign in with " + provider + " failed";
+            }
+            return new OauthCallbackResult(frontendLoginError(detail, frontendOrigin()), null);
         }
     }
 
-    public String consumeTicket(String ticket) {
+    public String issueTicket(AuthResponse session) {
+        String ticket = randomToken();
+        try {
+            redis.opsForValue().set(
+                    ticketKey(ticket),
+                    objectMapper.writeValueAsString(session),
+                    60,
+                    TimeUnit.SECONDS
+            );
+        } catch (JsonProcessingException error) {
+            throw new IllegalStateException("Could not store OAuth ticket", error);
+        }
+        return ticket;
+    }
+
+    public AuthResponse consumeTicket(String ticket) {
         if (ticket == null || ticket.isBlank()) {
-            throw ApiException.badRequest("ticket is required");
+            throw ApiException.badRequest("Missing OAuth ticket");
         }
         String key = ticketKey(ticket.trim());
-        String userId = redis.opsForValue().get(key);
+        String raw = redis.opsForValue().get(key);
         redis.delete(key);
-        if (userId == null) {
-            throw ApiException.badRequest("Sign-in expired. Try again.");
+        if (raw == null || raw.isBlank()) {
+            throw ApiException.badRequest("OAuth ticket expired. Try again.");
         }
-        return userId;
+        try {
+            return objectMapper.readValue(raw, AuthResponse.class);
+        } catch (JsonProcessingException error) {
+            throw ApiException.badRequest("OAuth ticket expired. Try again.");
+        }
     }
 
-    private OauthProfile fetchProfile(String provider, String code) throws Exception {
+    public String frontendOriginFromState(String state) {
+        if (state == null || state.isBlank()) {
+            return frontendOrigin();
+        }
+        String packed = redis.opsForValue().get(stateKey(state));
+        if (packed == null) {
+            return frontendOrigin();
+        }
+        return allowedFrontend(parseState(packed).frontendOrigin());
+    }
+
+    private OauthProfile fetchProfile(String provider, String code, String callbackUri) throws Exception {
         OauthProperties.Provider config = oauthProperties.config(provider);
         if ("github".equals(provider)) {
-            return githubProfile(config, code);
+            return githubProfile(config, code, callbackUri);
         }
-        return googleProfile(config, code);
+        return googleProfile(config, code, callbackUri);
     }
 
-    private OauthProfile githubProfile(OauthProperties.Provider config, String code) throws Exception {
+    private OauthProfile githubProfile(OauthProperties.Provider config, String code, String callbackUri) throws Exception {
         String tokenBody = "client_id=" + url(config.getClientId())
                 + "&client_secret=" + url(config.getClientSecret())
                 + "&code=" + url(code)
-                + "&redirect_uri=" + url(callbackUrl("github"));
+                + "&redirect_uri=" + url(callbackUri);
         JsonNode token = postForm("https://github.com/login/oauth/access_token", tokenBody, "application/json");
         String accessToken = text(token, "access_token");
         if (accessToken.isBlank()) {
-            throw ApiException.badRequest("GitHub did not return an access token");
+            String description = text(token, "error_description");
+            if (description.isBlank()) {
+                description = text(token, "error");
+            }
+            throw ApiException.badRequest(description.isBlank()
+                    ? "GitHub did not return an access token"
+                    : description);
         }
         JsonNode user = getJson("https://api.github.com/user", accessToken);
         String email = text(user, "email");
@@ -184,11 +261,11 @@ public class OauthService {
         return new OauthProfile("github", id, email, name, text(user, "avatar_url"), text(user, "login"));
     }
 
-    private OauthProfile googleProfile(OauthProperties.Provider config, String code) throws Exception {
+    private OauthProfile googleProfile(OauthProperties.Provider config, String code, String callbackUri) throws Exception {
         String tokenBody = "client_id=" + url(config.getClientId())
                 + "&client_secret=" + url(config.getClientSecret())
                 + "&code=" + url(code)
-                + "&redirect_uri=" + url(callbackUrl("google"))
+                + "&redirect_uri=" + url(callbackUri)
                 + "&grant_type=authorization_code";
         JsonNode token = postForm("https://oauth2.googleapis.com/token", tokenBody, null);
         String accessToken = text(token, "access_token");
@@ -212,15 +289,27 @@ public class OauthService {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
                 .timeout(HTTP_TIMEOUT)
                 .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("User-Agent", "HaloLight")
                 .POST(HttpRequest.BodyPublishers.ofString(body));
         if (accept != null) {
             builder.header("Accept", accept);
         }
         HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        String responseBody = response.body() == null ? "" : response.body();
         if (response.statusCode() >= 400) {
+            log.warn("OAuth token HTTP {}: {}", response.statusCode(),
+                    responseBody.substring(0, Math.min(300, responseBody.length())));
             throw ApiException.badRequest("OAuth provider rejected the request");
         }
-        return objectMapper.readTree(response.body());
+        if (responseBody.isBlank() || !(responseBody.startsWith("{") || responseBody.startsWith("["))) {
+            throw ApiException.badRequest("OAuth provider returned an invalid token response");
+        }
+        JsonNode token = objectMapper.readTree(responseBody);
+        if (!text(token, "error").isBlank() && text(token, "access_token").isBlank()) {
+            String description = text(token, "error_description");
+            throw ApiException.badRequest(description.isBlank() ? text(token, "error") : description);
+        }
+        return token;
     }
 
     private JsonNode getJson(String url, String accessToken) throws Exception {
@@ -238,8 +327,52 @@ public class OauthService {
         return objectMapper.readTree(response.body());
     }
 
-    private String callbackUrl(String provider) {
-        return trimSlash(appAuthProperties.getPublicUrl()) + "/api/auth/oauth/" + provider + "/callback";
+    static String callbackUrl(String provider, String origin) {
+        return trimSlash(origin) + "/api/oauth/" + provider;
+    }
+
+    static String originFrom(
+            String forwardedProto,
+            String forwardedHost,
+            String hostHeader,
+            String scheme,
+            String serverName,
+            int serverPort,
+            String fallback
+    ) {
+        String proto = firstHeaderValue(forwardedProto);
+        if (proto == null || proto.isBlank()) {
+            proto = scheme == null || scheme.isBlank() ? "http" : scheme;
+        }
+        String host = firstHeaderValue(forwardedHost);
+        if (host == null || host.isBlank()) {
+            host = firstHeaderValue(hostHeader);
+        }
+        if (isLoopbackApiHost(host, serverName)) {
+            return fallback == null || fallback.isBlank() ? "http://localhost:8080" : trimSlash(fallback);
+        }
+        if (host == null || host.isBlank()) {
+            boolean defaultPort = ("http".equals(proto) && (serverPort == 80 || serverPort <= 0))
+                    || ("https".equals(proto) && serverPort == 443);
+            host = defaultPort || serverPort <= 0 ? serverName : serverName + ":" + serverPort;
+        }
+        return proto + "://" + host;
+    }
+
+    static String originFromCallbackUri(String callbackUri, String fallback) {
+        try {
+            URI uri = URI.create(callbackUri);
+            if (uri.getScheme() == null || uri.getHost() == null) {
+                return trimSlash(fallback);
+            }
+            int port = uri.getPort();
+            boolean defaultPort = port < 0
+                    || ("http".equals(uri.getScheme()) && port == 80)
+                    || ("https".equals(uri.getScheme()) && port == 443);
+            return uri.getScheme() + "://" + (defaultPort ? uri.getHost() : uri.getHost() + ":" + port);
+        } catch (RuntimeException ignored) {
+            return trimSlash(fallback);
+        }
     }
 
     static String normalizeProvider(String provider) {
@@ -254,6 +387,38 @@ public class OauthService {
     }
 
     static String safeRedirect(String redirect) {
+        return parseReturnToStatic(redirect).path();
+    }
+
+    SafeReturnTo parseReturnTo(String redirect) {
+        SafeReturnTo parsed = parseReturnToStatic(redirect);
+        if (parsed.origin() == null || parsed.origin().isBlank()) {
+            return new SafeReturnTo(frontendOrigin(), parsed.path());
+        }
+        return new SafeReturnTo(allowedFrontend(parsed.origin()), parsed.path());
+    }
+
+    private static SafeReturnTo parseReturnToStatic(String redirect) {
+        if (redirect == null || redirect.isBlank()) {
+            return new SafeReturnTo("", "/dashboard");
+        }
+        String value = redirect.trim();
+        if (value.startsWith("http://") || value.startsWith("https://")) {
+            try {
+                URI uri = URI.create(value);
+                String path = uri.getRawPath() == null ? "" : uri.getRawPath();
+                if (uri.getRawQuery() != null && !uri.getRawQuery().isBlank()) {
+                    path = path + "?" + uri.getRawQuery();
+                }
+                return new SafeReturnTo(originOf(uri), safeRedirectPath(path));
+            } catch (RuntimeException ignored) {
+                return new SafeReturnTo("", "/dashboard");
+            }
+        }
+        return new SafeReturnTo("", safeRedirectPath(value));
+    }
+
+    static String safeRedirectPath(String redirect) {
         if (redirect == null || redirect.isBlank()) {
             return "/dashboard";
         }
@@ -262,6 +427,129 @@ public class OauthService {
             return "/dashboard";
         }
         return value;
+    }
+
+    private String apiPublicUrl() {
+        String value = trimSlash(appAuthProperties.getPublicUrl());
+        return value.isBlank() ? "http://localhost:8000" : value;
+    }
+
+    private String allowedFrontend(String origin) {
+        String value = trimSlash(origin);
+        return isAllowedFrontend(value) ? value : frontendOrigin();
+    }
+
+    private boolean isApiOrigin(String origin) {
+        String value = trimSlash(origin).toLowerCase(Locale.ROOT);
+        if (value.isBlank()) {
+            return false;
+        }
+        return value.equals(apiPublicUrl().toLowerCase(Locale.ROOT))
+                || value.equals("http://127.0.0.1:8000")
+                || value.equals("http://localhost:8000");
+    }
+
+    private boolean isAllowedFrontend(String origin) {
+        String value = trimSlash(origin).toLowerCase(Locale.ROOT);
+        if (value.isBlank() || isApiOrigin(value)) {
+            return false;
+        }
+        if (value.equals(frontendOrigin().toLowerCase(Locale.ROOT))) {
+            return true;
+        }
+        if (corsAllowedOrigins == null || corsAllowedOrigins.isBlank()) {
+            return false;
+        }
+        for (String item : corsAllowedOrigins.split(",")) {
+            if (value.equals(trimSlash(item).toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String originOf(URI uri) {
+        if (uri.getScheme() == null || uri.getHost() == null) {
+            return "";
+        }
+        int port = uri.getPort();
+        boolean defaultPort = port < 0
+                || ("http".equals(uri.getScheme()) && port == 80)
+                || ("https".equals(uri.getScheme()) && port == 443);
+        return uri.getScheme() + "://" + (defaultPort ? uri.getHost() : uri.getHost() + ":" + port);
+    }
+
+    private String packState(String provider, String redirect, String frontendOrigin, String callbackUri) {
+        Map<String, String> payload = new LinkedHashMap<>();
+        payload.put("provider", provider);
+        payload.put("redirect", redirect);
+        payload.put("frontendOrigin", frontendOrigin);
+        payload.put("callbackUri", callbackUri);
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException error) {
+            throw new IllegalStateException("Could not store OAuth state", error);
+        }
+    }
+
+    private OauthPendingState parseState(String packed) {
+        String value = packed == null ? "" : packed.trim();
+        if (value.startsWith("{")) {
+            try {
+                JsonNode node = objectMapper.readTree(value);
+                SafeReturnTo returnTo = parseReturnTo(text(node, "redirect"));
+                String frontend = text(node, "frontendOrigin");
+                if (frontend.isBlank()) {
+                    frontend = returnTo.origin();
+                }
+                return new OauthPendingState(
+                        text(node, "provider"),
+                        returnTo.path(),
+                        allowedFrontend(frontend),
+                        text(node, "callbackUri")
+                );
+            } catch (Exception ignored) {
+                // Fall through to the legacy provider|redirect format.
+            }
+        }
+        int split = value.indexOf('|');
+        String provider = split < 0 ? value : value.substring(0, split);
+        String redirect = split < 0 ? "/dashboard" : value.substring(split + 1);
+        SafeReturnTo returnTo = parseReturnTo(redirect);
+        return new OauthPendingState(provider, returnTo.path(), allowedFrontend(returnTo.origin()), "");
+    }
+
+    private String resolveOrigin(String origin) {
+        if (origin == null || origin.isBlank()) {
+            return frontendOrigin();
+        }
+        String value = origin.trim();
+        if (!value.startsWith("http://") && !value.startsWith("https://")) {
+            return frontendOrigin();
+        }
+        return trimSlash(value);
+    }
+
+    private static boolean isLoopbackApiHost(String host, String serverName) {
+        String value = firstHeaderValue(host);
+        if (value == null || value.isBlank()) {
+            value = serverName;
+        }
+        if (value == null || value.isBlank()) {
+            return true;
+        }
+        String hostname = value.split(":", 2)[0].trim();
+        return "127.0.0.1".equals(hostname)
+                || "0.0.0.0".equals(hostname)
+                || "::1".equals(hostname)
+                || "localhost".equalsIgnoreCase(hostname);
+    }
+
+    private static String firstHeaderValue(String header) {
+        if (header == null || header.isBlank()) {
+            return null;
+        }
+        return header.split(",")[0].trim();
     }
 
     private static String stateKey(String state) {
@@ -303,6 +591,9 @@ public class OauthService {
         return "User";
     }
 
+    public record OauthCallbackResult(String location, AuthResponse session) {
+    }
+
     public record OauthProfile(
             String provider,
             String providerUserId,
@@ -311,5 +602,16 @@ public class OauthService {
             String avatar,
             String usernameHint
     ) {
+    }
+
+    private record OauthPendingState(
+            String provider,
+            String redirect,
+            String frontendOrigin,
+            String callbackUri
+    ) {
+    }
+
+    record SafeReturnTo(String origin, String path) {
     }
 }

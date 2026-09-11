@@ -1,14 +1,19 @@
-import { API_BASE_URL, type OauthProviders } from '#react/lib/client'
+import { getHttpClientBaseUrl } from '@/lib/client'
 
-import { safeRedirect } from './redirect'
+import { peekReturnTo, returnToHref } from './redirect'
 
 export type OauthProvider = 'github' | 'google'
 
-export type { OauthProviders }
-
-export function oauthStartUrl(provider: OauthProvider, redirect: string | null): string {
-  const path = safeRedirect(redirect)
+export function oauthStartUrl(provider: OauthProvider, redirect: string | null = peekReturnTo()): string {
   const params = new URLSearchParams()
-  params.set('redirect', path)
-  return `${API_BASE_URL}/api/auth/oauth/${provider}?${params.toString()}`
+  params.set('redirect_uri', returnToHref(redirect))
+  return `${getHttpClientBaseUrl()}/api/oauth/${provider}?${params.toString()}`
+}
+
+export function oauthLoginErrorMessage(code: string | null, unlinkedMessage: string): string | null {
+  if (!code) return null
+  if (code === 'oauth_unlinked' || code.toLowerCase().includes('oauth_unlinked')) {
+    return unlinkedMessage
+  }
+  return code
 }

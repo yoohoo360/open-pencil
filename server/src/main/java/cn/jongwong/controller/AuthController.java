@@ -1,12 +1,9 @@
 package cn.jongwong.controller;
 
-import cn.jongwong.auth.OauthService;
 import cn.jongwong.dto.ApiResponse;
 import cn.jongwong.dto.AuthResponse;
 import cn.jongwong.dto.ForgotPasswordRequest;
 import cn.jongwong.dto.LoginRequest;
-import cn.jongwong.dto.OauthExchangeRequest;
-import cn.jongwong.dto.OauthProvidersResponse;
 import cn.jongwong.dto.RegisterRequest;
 import cn.jongwong.dto.RegisterResponse;
 import cn.jongwong.dto.RefreshTokenRequest;
@@ -19,17 +16,11 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.net.URI;
 
 @Tag(name = "Authentication", description = "Authentication API endpoints")
 @RestController
@@ -38,7 +29,6 @@ import java.net.URI;
 public class AuthController {
 
     private final AuthService authService;
-    private final OauthService oauthService;
 
     @Operation(summary = "User login", description = "Authenticate user and return JWT token")
     @PostMapping("/login")
@@ -49,7 +39,10 @@ public class AuthController {
     @Operation(summary = "User registration", description = "Register a new user and send an email verification code")
     @PostMapping("/register")
     public ApiResponse<RegisterResponse> register(@Valid @RequestBody RegisterRequest registerRequest) {
-        return ApiResponse.ok("Verification email sent", authService.register(registerRequest));
+        RegisterResponse result = authService.register(registerRequest);
+        return ApiResponse.ok(
+                result.isRequiresVerification() ? "Verification email sent" : "Registered",
+                result);
     }
 
     @Operation(summary = "Verify email", description = "Activate a new account with the emailed code")
@@ -63,38 +56,6 @@ public class AuthController {
     public ApiResponse<Void> resendVerification(@Valid @RequestBody ResendVerificationRequest request) {
         authService.resendVerification(request.getEmail());
         return ApiResponse.ok("If the account needs verification, a new code was sent", null);
-    }
-
-    @GetMapping("/oauth/providers")
-    public ApiResponse<OauthProvidersResponse> oauthProviders() {
-        return ApiResponse.ok(oauthService.providers());
-    }
-
-    @GetMapping("/oauth/{provider}")
-    public ResponseEntity<Void> startOauth(
-            @PathVariable String provider,
-            @RequestParam(value = "redirect", required = false) String redirect
-    ) {
-        return redirectTo(oauthService.authorizationUrl(provider, redirect));
-    }
-
-    @GetMapping("/oauth/{provider}/callback")
-    public ResponseEntity<Void> oauthCallback(
-            @PathVariable String provider,
-            @RequestParam(value = "code", required = false) String code,
-            @RequestParam(value = "state", required = false) String state,
-            @RequestParam(value = "error", required = false) String error
-    ) {
-        String location = error != null && !error.isBlank()
-                ? oauthService.frontendLoginError(error)
-                : oauthService.handleCallback(provider, code, state);
-        return redirectTo(location);
-    }
-
-    @PostMapping("/oauth/exchange")
-    public ApiResponse<AuthResponse> exchangeOauth(@Valid @RequestBody OauthExchangeRequest request) {
-        String userId = oauthService.consumeTicket(request.getTicket());
-        return ApiResponse.ok("Login successful", authService.issueSessionByUserId(userId));
     }
 
     @Operation(summary = "Refresh token", description = "Get a new access token using refresh token")
@@ -128,9 +89,5 @@ public class AuthController {
     public ApiResponse<Void> resetPassword(@Valid @RequestBody ResetPasswordRequest request) {
         authService.resetPassword(request.getToken(), request.getNewPassword());
         return ApiResponse.ok("Password reset successful", null);
-    }
-
-    private static ResponseEntity<Void> redirectTo(String location) {
-        return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(location)).build();
     }
 }
